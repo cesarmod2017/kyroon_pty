@@ -32,10 +32,10 @@ class TerminalAutoCopy extends StatefulWidget {
   final Widget child;
 
   @override
-  State<TerminalAutoCopy> createState() => _TerminalAutoCopyState();
+  State<TerminalAutoCopy> createState() => TerminalAutoCopyState();
 }
 
-class _TerminalAutoCopyState extends State<TerminalAutoCopy> {
+class TerminalAutoCopyState extends State<TerminalAutoCopy> {
   /// Last text written to the clipboard, so releasing the pointer again over an
   /// unchanged selection doesn't re-copy it.
   String? _lastCopied;
@@ -49,7 +49,13 @@ class _TerminalAutoCopyState extends State<TerminalAutoCopy> {
     super.dispose();
   }
 
-  Future<void> _copySelection() async {
+  /// Copies whatever is selected right now. Public so an explicit copy
+  /// (Ctrl+Shift+C) can go through this same path — and get the same text and
+  /// the same confirmation — instead of xterm's built-in copy action.
+  ///
+  /// Pass [force] for an explicit copy: it skips the "already copied this"
+  /// guard, so pressing the shortcut always writes to the clipboard.
+  Future<void> copySelection({bool force = false}) async {
     final selection = widget.controller.selection;
     if (selection == null) {
       // Nothing selected (a plain tap clears it) — the next identical selection
@@ -58,8 +64,8 @@ class _TerminalAutoCopyState extends State<TerminalAutoCopy> {
       return;
     }
 
-    final text = _trimLineEnds(widget.terminal.buffer.getText(selection));
-    if (text.isEmpty || text == _lastCopied) return;
+    final text = _cleanUp(readTerminalRange(widget.terminal, selection));
+    if (text.isEmpty || (!force && text == _lastCopied)) return;
     _lastCopied = text;
 
     await Clipboard.setData(ClipboardData(text: text));
@@ -72,10 +78,21 @@ class _TerminalAutoCopyState extends State<TerminalAutoCopy> {
     });
   }
 
-  /// Drops the padding the terminal grid adds to the right of each line, so a
-  /// copied command pastes as typed instead of trailing dozens of spaces.
-  static String _trimLineEnds(String text) {
-    return text.split('\n').map((line) => line.trimRight()).join('\n').trim();
+  Future<void> _copySelection() => copySelection();
+
+  /// Drops the padding the terminal grid adds to the right of each line, plus
+  /// blank lines at either end of the selection, so a copied command pastes as
+  /// typed. Leading whitespace is kept — it's the indentation of the code or
+  /// output being copied.
+  static String _cleanUp(String text) {
+    final lines = text.split('\n').map((line) => line.trimRight()).toList();
+    while (lines.isNotEmpty && lines.first.isEmpty) {
+      lines.removeAt(0);
+    }
+    while (lines.isNotEmpty && lines.last.isEmpty) {
+      lines.removeLast();
+    }
+    return lines.join('\n');
   }
 
   @override
@@ -102,6 +119,60 @@ class _TerminalAutoCopyState extends State<TerminalAutoCopy> {
       ],
     );
   }
+}
+
+/// Reads [range] out of the terminal as text, **keeping blank columns**.
+///
+/// This is deliberately not `terminal.buffer.getText(range)`: that one skips
+/// every cell whose codepoint is 0, and a cell is 0 whenever nothing was ever
+/// printed into it. Full-screen CLIs lay text out by moving the cursor rather
+/// than printing runs of spaces, so their gaps are exactly those never-written
+/// cells — `getText` collapses them and you copy "I'llanalyzetheexample"
+/// instead of "I'll analyze the example". A blank cell is a blank column on
+/// screen, so it is copied as a space.
+///
+/// Otherwise this mirrors xterm's own walk: segment per line, and a newline
+/// between lines except where a line is the soft-wrapped continuation of the
+/// previous one.
+String readTerminalRange(Terminal terminal, BufferRange range) {
+  final buffer = terminal.buffer;
+  final normalized = range.normalized;
+  final out = StringBuffer();
+
+  for (final segment in normalized.toSegments()) {
+    if (segment.line < 0 || segment.line >= buffer.height) continue;
+    final line = buffer.lines[segment.line];
+
+    if (!(segment.line == normalized.begin.y ||
+        segment.line == 0 ||
+        line.isWrapped)) {
+      out.write('\n');
+    }
+
+    final from = (segment.start == null || segment.start! < 0)
+        ? 0
+        : segment.start!;
+    final to = (segment.end == null || segment.end! > line.length)
+        ? line.length
+        : segment.end!;
+
+    for (var i = from; i < to; i++) {
+      final codePoint = line.getCodePoint(i);
+      if (codePoint != 0) {
+        // A double-width glyph occupies two columns; skip it if the second one
+        // falls outside the selection, as xterm does.
+        if (i + line.getWidth(i) <= to) out.writeCharCode(codePoint);
+        continue;
+      }
+      // Codepoint 0 is also the filler cell that sits under the right half of a
+      // double-width glyph — that column is already covered by the glyph we
+      // just wrote, so it must not become a space.
+      final isWideCharFiller = i > 0 && line.getWidth(i - 1) == 2;
+      if (!isWideCharFiller) out.write(' ');
+    }
+  }
+
+  return out.toString();
 }
 
 class _CopiedPill extends StatelessWidget {

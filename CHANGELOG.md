@@ -1,3 +1,20 @@
+## 1.0.6
+
+Example app (the plugin API in `lib/` is unchanged):
+
+* **Fix copied text losing its spaces** — copying a line drawn by a full-screen
+  CLI produced `I'llanalyzetheexampleproject.` instead of `I'll analyze the
+  example project.`, and code copied out of the terminal lost its indentation.
+  xterm's `Buffer.getText()` skips every cell whose codepoint is 0, and a cell
+  is 0 whenever nothing was ever printed into it — CLIs lay text out by moving
+  the cursor (`ESC [ n G`) rather than printing runs of spaces, so the gaps
+  between words are exactly those cells. Copying now goes through
+  `readTerminalRange()`, which treats a blank cell as the blank column it is on
+  screen, while still not emitting a space for the filler cell under the right
+  half of a double-width glyph (CJK/emoji). `Ctrl+Shift+C` is routed through the
+  same path, since xterm's built-in copy action had the same bug. Covered by
+  tests in `example/test/terminal_auto_copy_test.dart`.
+
 ## 1.0.5
 
 * **Fix hung/blank terminal on Linux, macOS and Android when the executable

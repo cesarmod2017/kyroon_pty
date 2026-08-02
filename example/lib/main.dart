@@ -934,6 +934,10 @@ class _TerminalPaneState extends State<TerminalPane> {
   // receives nothing).
   final FocusNode _termFocus = FocusNode();
 
+  // Lets the Ctrl+Shift+C handler reuse the auto-copy path (same text, same
+  // "Copiado" confirmation) instead of xterm's built-in copy action.
+  final _autoCopyKey = GlobalKey<TerminalAutoCopyState>();
+
   @override
   void initState() {
     super.initState();
@@ -989,6 +993,16 @@ class _TerminalPaneState extends State<TerminalPane> {
     // for Á): modifiers arrive as their own char-less events.
     if (_kModifierKeys.contains(event.logicalKey)) {
       return KeyEventResult.ignored;
+    }
+
+    // Explicit copy — routed through our own extractor. xterm's built-in
+    // Ctrl+Shift+C uses buffer.getText(), which drops never-written cells and
+    // so squashes the spaces out of anything a full-screen CLI drew.
+    if (event.logicalKey == LogicalKeyboardKey.keyC &&
+        HardwareKeyboard.instance.isControlPressed &&
+        HardwareKeyboard.instance.isShiftPressed) {
+      _autoCopyKey.currentState?.copySelection(force: true);
+      return KeyEventResult.handled;
     }
 
     // Scrollback navigation — consumed here, never forwarded to the shell.
@@ -1093,6 +1107,7 @@ class _TerminalPaneState extends State<TerminalPane> {
               // Selecting text with the mouse copies it to the clipboard as
               // soon as the pointer is released (X11 / PuTTY behaviour).
               child: TerminalAutoCopy(
+                key: _autoCopyKey,
                 terminal: widget.session.terminal,
                 controller: widget.session.terminalController,
                 // readOnly follows the backend's input lease: always writable
