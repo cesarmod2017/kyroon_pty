@@ -7,6 +7,7 @@ import 'package:xterm/xterm.dart';
 
 import 'local_pty_backend.dart';
 import 'terminal_backend.dart';
+import 'theme.dart';
 
 /// A single live terminal tab: an xterm [Terminal] emulator wired to a
 /// [TerminalBackend], plus the UI state (scroll controller, title, exit code)
@@ -25,7 +26,7 @@ class PtySession {
     required TerminalBackend Function(int cols, int rows) backendBuilder,
   }) {
     terminal = Terminal(
-      maxLines: 10000,
+      maxLines: kScrollbackLines,
       platform: _terminalPlatform,
     );
 
@@ -266,6 +267,55 @@ class PtySession {
     }
   }
 
+  // ── Scrolling ──────────────────────────────────────────────────────────────
+  // xterm follows the newest output on its own, but *only* while the viewport
+  // is already parked at the bottom: scroll up once and the view stays where
+  // you left it while output keeps piling up below. These helpers are how the
+  // UI gets back to (and stays on) the tail, and how it pages through history
+  // when an app on screen has swallowed the mouse wheel.
+
+  /// True when the viewport is showing the newest output — i.e. new lines will
+  /// scroll into view by themselves. The few pixels of slack absorb rounding.
+  bool get isAtBottom {
+    if (!scrollController.hasClients) return true;
+    final p = scrollController.position;
+    return p.pixels >= p.maxScrollExtent - 4;
+  }
+
+  /// Parks the viewport on the newest output, which also re-arms xterm's
+  /// follow-the-tail behaviour. Safe to call when there's nothing to scroll.
+  void scrollToBottom({bool animate = false}) {
+    if (_disposed || !scrollController.hasClients) return;
+    final target = scrollController.position.maxScrollExtent;
+    if (scrollController.offset >= target) return;
+    if (animate) {
+      scrollController.animateTo(
+        target,
+        duration: const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+      );
+    } else {
+      scrollController.jumpTo(target);
+    }
+  }
+
+  /// Scrolls the history by [pages] viewports — negative goes back in time.
+  void scrollPages(double pages) {
+    if (_disposed || !scrollController.hasClients) return;
+    final p = scrollController.position;
+    // 90%, not a full viewport: the overlap keeps a couple of lines of context
+    // across the jump so you don't lose your place.
+    final target = (p.pixels + p.viewportDimension * 0.9 * pages)
+        .clamp(p.minScrollExtent, p.maxScrollExtent);
+    scrollController.jumpTo(target);
+  }
+
+  /// Jumps to the oldest line still in the scrollback.
+  void scrollToTop() {
+    if (_disposed || !scrollController.hasClients) return;
+    scrollController.jumpTo(scrollController.position.minScrollExtent);
+  }
+
   int? get exitCode => backend.exitCode;
 
   int get pid => backend.pid ?? -1;
@@ -281,6 +331,9 @@ class PtySession {
     if (_disposed) return;
     backend.write(text);
     _emitInput(text);
+    // Sending input means "I'm driving the session now" — show the result of
+    // it, even if the view was parked up in the scrollback.
+    scrollToBottom();
   }
 
   /// Writes keyboard-origin bytes to the process through the same path as live
@@ -292,6 +345,7 @@ class PtySession {
     if (_disposed || data.isEmpty) return;
     backend.write(data);
     _bufferLiveInput(data);
+    scrollToBottom();
   }
 
   /// Types a full command line and presses Enter, so it runs on the machine
@@ -302,6 +356,7 @@ class PtySession {
     final data = '$command\r';
     backend.write(data);
     _emitInput(data);
+    scrollToBottom();
   }
 
   /// Frees everything this session owns. Idempotent. Call only after the

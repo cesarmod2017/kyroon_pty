@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:xterm/xterm.dart';
 
 import 'pty_session.dart';
+import 'terminal_auto_copy.dart';
 import 'theme.dart';
 
 void main() {
@@ -964,9 +965,9 @@ class _TerminalPaneState extends State<TerminalPane> {
   }
 
   void _onScroll() {
-    final c = widget.session.scrollController;
-    if (!c.hasClients) return;
-    final atBottom = c.offset >= c.position.maxScrollExtent - 4;
+    // Drives the jump-to-bottom button: it only makes sense while the view has
+    // fallen behind the output.
+    final atBottom = widget.session.isAtBottom;
     if (atBottom != _atBottom) setState(() => _atBottom = atBottom);
   }
 
@@ -989,6 +990,16 @@ class _TerminalPaneState extends State<TerminalPane> {
     if (_kModifierKeys.contains(event.logicalKey)) {
       return KeyEventResult.ignored;
     }
+
+    // Scrollback navigation — consumed here, never forwarded to the shell.
+    // This is the way back through the history when a full-screen app on the
+    // alternate buffer has taken over the mouse wheel.
+    if (_handleScrollKey(event)) return KeyEventResult.handled;
+
+    // Any other keystroke means the user is interacting, so snap to the newest
+    // output first — otherwise they'd type into a view parked in the history
+    // and see nothing happen. This is what every real terminal does.
+    widget.session.scrollToBottom();
 
     final isEnter = event.logicalKey == LogicalKeyboardKey.enter ||
         event.logicalKey == LogicalKeyboardKey.numpadEnter;
@@ -1024,15 +1035,29 @@ class _TerminalPaneState extends State<TerminalPane> {
     return KeyEventResult.ignored;
   }
 
-  void _jumpToBottom() {
-    final c = widget.session.scrollController;
-    if (!c.hasClients) return;
-    c.animateTo(
-      c.position.maxScrollExtent,
-      duration: const Duration(milliseconds: 200),
-      curve: Curves.easeOut,
-    );
+  /// Keyboard scrolling of the view (not the shell): Shift+PageUp/PageDown page
+  /// through the scrollback, Shift+Home/End jump to the oldest/newest line.
+  /// Returns true when the key was consumed.
+  bool _handleScrollKey(KeyEvent event) {
+    if (!HardwareKeyboard.instance.isShiftPressed) return false;
+    final session = widget.session;
+    final key = event.logicalKey;
+
+    if (key == LogicalKeyboardKey.pageUp) {
+      session.scrollPages(-1);
+    } else if (key == LogicalKeyboardKey.pageDown) {
+      session.scrollPages(1);
+    } else if (key == LogicalKeyboardKey.home) {
+      session.scrollToTop();
+    } else if (key == LogicalKeyboardKey.end) {
+      session.scrollToBottom(animate: true);
+    } else {
+      return false;
+    }
+    return true;
   }
+
+  void _jumpToBottom() => widget.session.scrollToBottom(animate: true);
 
   @override
   Widget build(BuildContext context) {
@@ -1065,39 +1090,47 @@ class _TerminalPaneState extends State<TerminalPane> {
         child: Stack(
           children: [
             Positioned.fill(
-              // readOnly follows the backend's input lease: always writable for
-              // a local PTY, read-only for a remote stream until control is
-              // acquired. Rebuilds when the lease flips.
-              child: ValueListenableBuilder<bool>(
-                valueListenable: widget.session.backend.inputEnabled,
-                builder: (context, canInput, _) => TerminalView(
-                  widget.session.terminal,
-                  focusNode: _termFocus,
-                  controller: widget.session.terminalController,
-                  scrollController: widget.session.scrollController,
-                  theme: kTerminalTheme,
-                  textStyle: const TerminalStyle(
-                    fontSize: 13,
-                    fontFamily: kMonoFontFamily,
-                    fontFamilyFallback: kMonoFontFallback,
+              // Selecting text with the mouse copies it to the clipboard as
+              // soon as the pointer is released (X11 / PuTTY behaviour).
+              child: TerminalAutoCopy(
+                terminal: widget.session.terminal,
+                controller: widget.session.terminalController,
+                // readOnly follows the backend's input lease: always writable
+                // for a local PTY, read-only for a remote stream until control
+                // is acquired. Rebuilds when the lease flips.
+                child: ValueListenableBuilder<bool>(
+                  valueListenable: widget.session.backend.inputEnabled,
+                  builder: (context, canInput, _) => TerminalView(
+                    widget.session.terminal,
+                    focusNode: _termFocus,
+                    controller: widget.session.terminalController,
+                    scrollController: widget.session.scrollController,
+                    theme: kTerminalTheme,
+                    textStyle: const TerminalStyle(
+                      fontSize: 13,
+                      fontFamily: kMonoFontFamily,
+                      fontFamilyFallback: kMonoFontFallback,
+                    ),
+                    padding: const EdgeInsets.all(10),
+                    autofocus: true,
+                    backgroundOpacity: 0,
+                    cursorType: TerminalCursorType.block,
+                    readOnly: !canInput,
+                    // Read characters straight from hardware key events. The
+                    // IME / text-input path (hardwareKeyboardOnly:false)
+                    // composes dead keys (accents) correctly, but on Windows
+                    // desktop it throws "Could not set client, view ID is null"
+                    // on attach and typing fails — so we keep hardware mode
+                    // here for reliable input. For accented text use the
+                    // command bar (a normal TextField, which handles dead keys
+                    // via the OS IME).
+                    hardwareKeyboardOnly: true,
+                    // Highest-priority key hook: turn Ctrl+Enter / Shift+Enter
+                    // into a literal newline (LF) instead of "submit" (CR).
+                    // Apps like the Claude CLI / readline treat LF as "insert
+                    // line break".
+                    onKeyEvent: _handleTerminalKey,
                   ),
-                  padding: const EdgeInsets.all(10),
-                  autofocus: true,
-                  backgroundOpacity: 0,
-                  cursorType: TerminalCursorType.block,
-                  readOnly: !canInput,
-                  // Read characters straight from hardware key events. The IME /
-                  // text-input path (hardwareKeyboardOnly:false) composes dead
-                  // keys (accents) correctly, but on Windows desktop it throws
-                  // "Could not set client, view ID is null" on attach and typing
-                  // fails — so we keep hardware mode here for reliable input.
-                  // For accented text use the command bar (a normal TextField,
-                  // which handles dead keys via the OS IME).
-                  hardwareKeyboardOnly: true,
-                  // Highest-priority key hook: turn Ctrl+Enter / Shift+Enter into
-                  // a literal newline (LF) instead of "submit" (CR). Apps like
-                  // the Claude CLI / readline treat LF as "insert line break".
-                  onKeyEvent: _handleTerminalKey,
                 ),
               ),
             ),

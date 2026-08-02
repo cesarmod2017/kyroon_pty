@@ -62,6 +62,12 @@ const kMonoFontFallback = <String>[
   'monospace',
 ];
 
+/// Lines of scrollback each terminal keeps. Once the buffer saturates every new
+/// line drops the oldest one, which yanks the content under a viewport that is
+/// scrolled up — so keep it deep enough that a normal session never trims. Cost
+/// is ~16 bytes per cell: at 120 columns that's ~1.9 KB/line, ~38 MB per tab.
+const kScrollbackLines = 20000;
+
 /// The xterm terminal theme — mirrors `TerminalTab.tsx`'s xterm.js theme
 /// (`#0d0d15` background, `#dee2e8` foreground, `#7c3aed` cursor) and fills in
 /// a tasteful 16-color ANSI palette tuned for the dark surface.

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart';
 
 import 'remote_pty_backend.dart';
+import 'terminal_auto_copy.dart';
 import 'terminal_backend.dart';
 import 'theme.dart';
 import 'websocket_pty_transport.dart';
@@ -84,7 +85,7 @@ class _WebTerminalPageState extends State<WebTerminalPage> {
     final url = _urlController.text.trim();
     if (url.isEmpty) return;
 
-    final terminal = Terminal(maxLines: 10000);
+    final terminal = Terminal(maxLines: kScrollbackLines);
     final backend = RemotePtyBackend(WebSocketPtyTransport(url));
 
     _outputSub = backend.output.listen((data) => terminal.write(data));
@@ -243,10 +244,25 @@ class _StatusDot extends StatelessWidget {
   }
 }
 
-class _RemoteTerminal extends StatelessWidget {
+class _RemoteTerminal extends StatefulWidget {
   const _RemoteTerminal({required this.terminal, required this.backend});
   final Terminal terminal;
   final TerminalBackend backend;
+
+  @override
+  State<_RemoteTerminal> createState() => _RemoteTerminalState();
+}
+
+class _RemoteTerminalState extends State<_RemoteTerminal> {
+  // Owned here (not by the backend) so selection state lives as long as the
+  // view does; [TerminalAutoCopy] reads the selection from it.
+  final _controller = TerminalController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -258,21 +274,27 @@ class _RemoteTerminal extends StatelessWidget {
           borderRadius: BorderRadius.circular(AppRadius.md),
           border: Border.all(color: AppColors.border),
         ),
-        child: ValueListenableBuilder<bool>(
-          valueListenable: backend.inputEnabled,
-          builder: (context, canInput, _) => TerminalView(
-            terminal,
-            theme: kTerminalTheme,
-            textStyle: const TerminalStyle(
-              fontSize: 13,
-              fontFamily: kMonoFontFamily,
-              fontFamilyFallback: kMonoFontFallback,
+        // Releasing the mouse over a selection copies it to the clipboard.
+        child: TerminalAutoCopy(
+          terminal: widget.terminal,
+          controller: _controller,
+          child: ValueListenableBuilder<bool>(
+            valueListenable: widget.backend.inputEnabled,
+            builder: (context, canInput, _) => TerminalView(
+              widget.terminal,
+              controller: _controller,
+              theme: kTerminalTheme,
+              textStyle: const TerminalStyle(
+                fontSize: 13,
+                fontFamily: kMonoFontFamily,
+                fontFamilyFallback: kMonoFontFallback,
+              ),
+              padding: const EdgeInsets.all(10),
+              autofocus: true,
+              readOnly: !canInput,
+              // Web: keep the default IME/text-input path so the browser/soft
+              // keyboard works (do NOT force hardwareKeyboardOnly here).
             ),
-            padding: const EdgeInsets.all(10),
-            autofocus: true,
-            readOnly: !canInput,
-            // Web: keep the default IME/text-input path so the browser/soft
-            // keyboard works (do NOT force hardwareKeyboardOnly here).
           ),
         ),
       ),

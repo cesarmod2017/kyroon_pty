@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <pthread.h>
 #include <unistd.h>
@@ -180,12 +181,14 @@ FFI_PLUGIN_EXPORT PtyHandle *pty_create(PtyOptions *options)
             chdir(options->working_directory);
         }
 
-        int ok = execvp(options->executable, options->arguments);
+        execvp(options->executable, options->arguments);
 
-        if (ok < 0)
-        {
-            perror("execvp");
-        }
+        // execvp só retorna em caso de ERRO (ex.: executável não encontrado no
+        // PATH do PTY). O filho DEVE terminar aqui — sem o _exit ele "cai" no
+        // código do pai abaixo (malloc handle + threads + return), rodando dois
+        // processos concorrentes e deixando a TUI travada/em branco no Linux.
+        perror("execvp");
+        _exit(127);
     }
 
     PtyHandle *handle = (PtyHandle *)malloc(sizeof(PtyHandle));

@@ -1,3 +1,28 @@
+## 1.0.5
+
+* **Fix hung/blank terminal on Linux, macOS and Android when the executable
+  can't be exec'd** — after a failed `execvp` the forked child only logged
+  `perror` and fell through into the *parent's* code path (allocating a handle
+  and starting the reader threads), so two processes ran against the same PTY
+  and the view stayed blank or frozen. The child now `_exit(127)`s, the
+  conventional "command not found" status, and the failure surfaces as a normal
+  process exit.
+
+Example app (the plugin API in `lib/` is unchanged):
+
+* **Select to copy** — selecting text with the mouse copies it to the clipboard
+  as soon as the pointer is released (X11/PuTTY behaviour), with a brief
+  "Copiado" confirmation. The selection stays on screen, and trailing grid
+  padding is stripped so a copied command pastes as typed. Wired for both the
+  desktop terminal and the web/remote viewer via the new `TerminalAutoCopy`
+  widget.
+* **Scrollback that keeps up** — history raised from 10 000 to 20 000 lines
+  (`kScrollbackLines`), so a chatty CLI no longer trims away what you're trying
+  to scroll back and read. Typing or sending a command now snaps the view back
+  to the newest output like a real terminal, and `Shift+PageUp`/`PageDown` /
+  `Shift+Home`/`End` page through the history — the way back through the
+  scrollback when a full-screen app has claimed the mouse wheel.
+
 ## 1.0.4
 
 * **Inherit the full environment by default** — `Pty.start` now passes the whole
